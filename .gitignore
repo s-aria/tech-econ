@@ -1,0 +1,8 @@
+# Ignore PNG images
+*.png
+
+# Ignore HTML files
+*.html
+
+# Ignore virtual environment folder
+.teco/
