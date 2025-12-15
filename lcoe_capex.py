@@ -14,13 +14,13 @@ hover_labels = [
 ]
 
 # Create DataFrame for Plotly
-df = pd.DataFrame({"LCOE": lcoe, "CapEx": capex, "Label": hover_labels})
+df = pd.DataFrame({"CapEx": capex, "LCOE": lcoe, "Label": hover_labels})
 
 # Scatter plot with linear regression trendline
 fig = px.scatter(
     df,
-    x="LCOE",
-    y="CapEx",
+    x="CapEx",
+    y="LCOE",
     hover_name="Label",
     labels={"LCOE": "LCOE", "CapEx": "CapEx"},
     title="CapEx vs LCOE with Linear Regression",

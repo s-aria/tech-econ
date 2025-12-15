@@ -1,0 +1,3 @@
+major_radius_m,net_power_MWe,fusion_power_MW,power_total_MW,capex_GBP,fixed_OandM_GBP_per_year, discount_rate_pct,lifetime_years,efficiency_after_sec_cycle_%, LCOE
+4.3,609.25,2719,3510.213463,19329800230.00,230782573.53,7,40,43.6,1619.123913
+3.6,533.00,2719,3714.571393,12546996041.82,233527883.00,7,40,42.3,449.2413083

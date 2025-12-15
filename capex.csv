@@ -1,0 +1,42 @@
+
+Reactor,System,Subsystem,Capex (£)
+SPP2.4,TF coils,HTS centre column,250610507.51
+SPP2.4,TF coils,HTS limbs,320820000.12 
+SPP2.4,TF coils,Cu centre column,0
+SPP2.4,TF coils,Cu limbs,0
+SPP2.4,PF coils, PF coils,784972881.10 
+SPP2.4,Vacuum vessel,Vacuum vessel,558223198.05
+SPP2.4,Breeding,Outboard breeder blanket & FW (exc. Breeder),160821815.00 
+SPP2.4,Breeding,Outboard breeder material,1375077606.27
+SPP2.4,Breeding,Inboard breeder blanket & FW (exc. Breeder),0
+SPP2.4,Breeding,Inboard breeder material,0
+SPP2.4,IB Shield,IB shield,391435261.08
+SPP2.4,Divertor breeding,Divertor breeding,0
+SPP2.4,Limiters,Limiters,86411512.23
+SPP2.4,HCD,HCD,3143534699.44
+SPP2.4,Cryoplant,Cryoplant,190527315.82
+SPP2.4,Power cycle,Power cycle,1400943584.57
+SPP2.4,Maintenance,Remote Handling Equipment,1197537042.79
+SPP2.4,Buildings,Buildings,6692607003.75
+SPP2.4,Cryostat,Cryostat,211255022.88
+SPP2.4,All other capex,All other CAPEX,1988111841.01
+AltC,TF coils,HTS centre column,0
+AltC,TF coils,HTS limbs,0
+AltC,TF coils,Cu centre column,43600306
+AltC,TF coils,Cu limbs,449727671
+AltC,PF coils, PF coils,737057569
+AltC,Vacuum vessel,Vacuum vessel,391269477.9
+AltC,Breeding,Outboard breeder blanket & FW (exc. Breeder),326027603
+AltC,Breeding,Outboard breeder material,426924992.4
+AltC,Breeding,Inboard breeder blanket & FW (exc. Breeder),33715739
+AltC,Breeding,Inboard breeder material,42285610
+AltC,IB Shield,IB shield,108903416
+AltC,Divertor breeding,Divertor breeding,0
+AltC,Limiters,Limiters,60567507
+AltC,HCD,HCD,1002286426
+AltC,Cryoplant,Cryoplant,104914759
+AltC,Power cycle,Power cycle,1510963851
+AltC,Maintenance,Remote Handling Equipment,950135623
+AltC,Buildings,Buildings,5152907874
+AltC,Cryostat,Cryostat,148072747
+AltC,All other capex,All other CAPEX,1166656345
