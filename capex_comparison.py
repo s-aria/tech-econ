@@ -16,6 +16,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
 from matplotlib import rcParams
+import matplotlib.patches as mpatches
+
 
 # =============================================================================
 # CONFIG
@@ -104,9 +106,66 @@ def autopct_factory(values, total, min_pct):
         return f"{pct:.1f}%\n£{abs_val:,.0f}"
     return inner
 
+
+def make_ppb_palette(n: int,
+                     cmaps=("Purples", "PuRd", "BuPu"),
+                     lo=0.35, hi=0.90) -> list:
+    """
+    Return 'n' RGBA colors sampled across purple–pink–blue colormaps.
+    Uses version-safe APIs. Always returns a non-empty list (falls back to tab20).
+    """
+    if n <= 0:
+        return []
+
+    colors = []
+
+    # Version-safe getter
+    def get_cmap(name: str):
+        try:
+            return mpl.colormaps.get_cmap(name)   # modern Matplotlib (preferred)
+        except Exception:
+            return plt.get_cmap(name)             # fallback for older versions
+
+    steps_per_cmap = int(np.ceil(n / max(1, len(cmaps))))
+
+    try:
+        for cmap_name in cmaps:
+            cmap = get_cmap(cmap_name)
+            # sample evenly between lo..hi and append RGBA tuples
+            for t in np.linspace(lo, hi, steps_per_cmap):
+                colors.append(cmap(float(t)))
+                if len(colors) >= n:
+                    break
+            if len(colors) >= n:
+                break
+
+        # Cycle to reach n if needed, else trim to n
+        if 0 < len(colors) < n:
+            reps = int(np.ceil(n / len(colors)))
+            colors = (colors * reps)[:n]
+        else:
+            colors = colors[:n]
+
+    except Exception:
+        # Last-resort categorical fallback (ensures a non-empty list)
+        base = list(plt.cm.tab20.colors)
+        if not base:
+            base = [(0.5, 0.5, 0.5, 1.0)]  # single grey if absolutely            base = [(0.5, 0.5, 0.5, 1.0)]  # single grey if absolutely necessary
+        reps = int(np.ceil(n / len(base)))
+        colors = (base * reps)[:n]
+
+
+
 def build_pie_colors_and_explode(categories, highlight_canon_set):
     # Neutral greys for non-highlighted categories
-    neutral_cycle = list(plt.cm.Greys(np.linspace(0.35, 0.85, max(10, len(categories)))))
+    neutral_cycle = list(plt.cm.BuPu(np.linspace(0.35, 0.85, max(10, len(categories)))))
+    # neutral_cycle = make_ppb_palette(max(10, len(categories)),cmaps=("Purples", "PuRd", "BuPu"),lo=0.35, hi=0.90)
+    
+    # if not isinstance(neutral_cycle, (list, tuple)) or len(neutral_cycle) == 0:
+    #         neutral_cycle = list(plt.cm.tab20.colors)
+    #         if len(neutral_cycle) == 0:
+    #             neutral_cycle = [(0.6, 0.6, 0.6, 1.0)]
+
     colors, explodes = [], []
     i_neutral = 0
     for cat in categories:
@@ -255,6 +314,30 @@ for reactor in reactors:
         pctdistance=0.70 if donut_hole_ratio > 0 else 0.6,
         wedgeprops=dict(linewidth=0.6, edgecolor="white")
     )
+    
+
+    legend_labels = categories
+
+    # Use proxy patches with the same face/edge colors and line widths as wedges
+    handles = []
+    for cat, w in zip(categories, wedges):
+        patch = mpatches.Patch(
+            facecolor=w.get_facecolor(),
+            edgecolor=w.get_edgecolor(),
+            linewidth=w.get_linewidth()
+        )
+        handles.append(patch)
+
+    # Create legend (no reordering); TF/PF remain where their slices are
+    leg = ax.legend(
+        handles,
+        legend_labels,
+        title="System",
+        bbox_to_anchor=(1.02, 1),
+        loc="upper left",
+        borderaxespad=0.0
+    )
+
 
     # Style internal numbers
     for t in autotexts:
@@ -283,30 +366,30 @@ for reactor in reactors:
     )
 
     # Legend: TF/PF first, bold
-    legend_labels, legend_colors = [], []
-    # First, add highlights in requested order
-    for h in HIGHLIGHT_SYSTEMS:
-        for cat, col in zip(categories, colors):
-            if canon(cat) == canon(h):
-                legend_labels.append(cat)
-                legend_colors.append(col)
-    # Then add the rest
-    for cat, col in zip(categories, colors):
-        if canon(cat) not in {canon(x) for x in HIGHLIGHT_SYSTEMS}:
-            legend_labels.append(cat)
-            legend_colors.append(col)
+    # legend_labels, legend_colors = [], []
+    # # First, add highlights in requested order
+    # for h in HIGHLIGHT_SYSTEMS:
+    #     for cat, col in zip(categories, colors):
+    #         if canon(cat) == canon(h):
+    #             legend_labels.append(cat)
+    #             legend_colors.append(col)
+    # # Then add the rest
+    # for cat, col in zip(categories, colors):
+    #     if canon(cat) not in {canon(x) for x in HIGHLIGHT_SYSTEMS}:
+    #         legend_labels.append(cat)
+    #         legend_colors.append(col)
 
-    handles = [
-        plt.Rectangle((0, 0), 1, 1, color=c,
-                      ec=("black" if canon(l) in highlight_canon else "white"),
-                      lw=1.0)
-        for l, c in zip(legend_labels, legend_colors)
-    ]
-    leg = ax.legend(handles, legend_labels, title="System",
-                    bbox_to_anchor=(1.02, 1), loc="upper left")
-    for txt in leg.get_texts():
-        if canon(txt.get_text()) in highlight_canon:
-            txt.set_fontweight("bold")
+    # handles = [
+    #     plt.Rectangle((0, 0), 1, 1, color=c,
+    #                   ec=("black" if canon(l) in highlight_canon else "white"),
+    #                   lw=1.0)
+    #     for l, c in zip(legend_labels, legend_colors)
+    # ]
+    # leg = ax.legend(handles, legend_labels, title="System",
+    #                 bbox_to_anchor=(1.02, 1), loc="upper left")
+    # for txt in leg.get_texts():
+    #     if canon(txt.get_text()) in highlight_canon:
+    #         txt.set_fontweight("bold")
 
     ax.set_title(f"{reactor} – CAPEX by System (TF/PF highlighted)", fontsize=14)
     ax.axis("equal")
@@ -345,6 +428,14 @@ pivot = pivot.reindex(index=reactor_order, columns=systems_order)
 
 # Colors for bars
 neutral_cycle = list(plt.cm.Greys(np.linspace(0.35, 0.85, max(10, len(pivot.columns)))))
+
+# palette = make_ppb_palette(max(10, len(pivot.columns)),cmaps=("Purples", "PuRd", "BuPu"),lo=0.35, hi=0.90)
+
+# if not isinstance(palette, (list, tuple)) or len(palette) == 0:
+#     palette = list(plt.cm.tab20.colors)
+#     if len(palette) == 0:
+#         palette = [(0.6, 0.6, 0.6, 1.0)]
+
 bar_colors = []
 i_neutral = 0
 for system in pivot.columns:
