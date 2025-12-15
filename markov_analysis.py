@@ -1,98 +1,87 @@
 
+#!/usr/bin/env python3
 """
-CTMC reliability model for a TF coil with event-dependent failure modes.
+CTMC comparison with explicit plotting: ITER-like vs STEP-like TF coil reliability
 
-System overview:
-- 12 TF coils (configurable), each with N_joints (e.g., 2880 total joints).
-- Failure modes: QUENCH, MISALIGNMENT, COOLING LOSS.
-- States: Healthy (H), Misalignment (M), Cooling loss (C), Quench (Q), combined intermediate states,
-          and Failed (F, absorbing).
-- Dependencies: In M or C, the quench hazard is multiplied by factors (alpha_MQ, alpha_CQ).
-- Repairs: Optional transitions back to healthier states with repair rates.
+- Runs both scenarios and writes:
+  * ctmc_outputs/ITER_like_transient.csv
+  * ctmc_outputs/STEP_like_transient.csv
+  * ctmc_outputs/comparison_Pfail.csv
+  * ctmc_outputs/summary.csv
 
-Key outputs:
-- Transient probability vector p(t) over mission time.
-- Probability of failure by time T (p_F(T)).
-- Reliability R(T) = 1 - p_F(T).
-- Monte Carlo sanity check.
-
-Assumptions:
-- Hazards are exponential (memoryless) → CTMC is appropriate.
-- Independence at joint level unless captured via multipliers/common-cause rates.
-- Cooling-pipe hazards may be coil-level rather than per-joint (configurable).
+- Saves figures (PNG):
+  * ctmc_outputs/comparison_Pfail.png      — overlay of P_fail(t)
+  * ctmc_outputs/comparison_R.png          — overlay of Reliability R(t)
+  * ctmc_outputs/ITER_like_states.png      — stacked area of state probabilities (ITER-like)
+  * ctmc_outputs/STEP_like_states.png      — stacked area of state probabilities (STEP-like)
 
 Author: (you)
 """
 
 from dataclasses import dataclass
-import numpy as np
 from typing import Dict, List, Tuple, Optional
+import numpy as np
+import csv
+import os
 
+# --------------------------- Data classes ---------------------------
 
 @dataclass
 class SystemConfig:
     n_tf_coils: int = 12
-    n_joints_total: int = 2880  # total joints across all coils
-    # Distribution of joints per coil (optional). If None, assume equal split.
-    joints_per_coil: Optional[List[int]] = None
+    n_joints_total: int = 2880
+    joints_per_coil: Optional[List[int]] = None  # if None, split evenly
 
 
 @dataclass
 class HazardParams:
-    # Per-joint base hazards (per hour, example units; set as needed)
-    lambda_quench_per_joint: float = 1e-7      # quench initiation per joint
-    lambda_misalignment_per_joint: float = 5e-8  # misalignment initiation per joint
+    # Per-joint base hazards (per hour)
+    lambda_quench_per_joint: float = 1e-7
+    lambda_misalignment_per_joint: float = 5e-8
 
-    # Cooling pipes may be per coil or system-level. Use BOTH and choose via flags in ModelParams.
-    lambda_cooling_per_coil: float = 1e-6     # cooling-loss initiation per coil
-    lambda_cooling_system_cc: float = 2e-6    # common-cause cooling-loss rate affecting many coils at once
+    # Cooling hazards
+    lambda_cooling_per_coil: float = 1e-6       # per coil per hour
+    lambda_cooling_system_cc: float = 2e-6      # system-level (common-cause) per hour
 
-    # Escalation to failure (within a degraded state), e.g., quench → failed
-    mu_quench_to_fail: float = 1e-3           # failure completion rate from quench
-    mu_misalignment_to_fail: float = 1e-5     # failure completion rate from misalignment
-    mu_cooling_to_fail: float = 2e-4          # failure completion rate from cooling loss
+    # Progression to failure (within degraded states)
+    mu_quench_to_fail: float = 3.6              # ~quench completion rate, h^-1
+    mu_misalignment_to_fail: float = 1e-5
+    mu_cooling_to_fail: float = 2e-4
 
-    # Repairs (optional; set to 0 to disable)
-    repair_from_quench: float = 5e-4
-    repair_from_misalignment: float = 1e-3
-    repair_from_cooling: float = 8e-4
+    # Repairs (set to 0 to disable for pure reliability)
+    repair_from_quench: float = 0.0
+    repair_from_misalignment: float = 0.0
+    repair_from_cooling: float = 0.0
 
-    # Dependency multipliers (hazard coupling)
-    alpha_MQ: float = 5.0     # multiplier: misalignment increases quench rate
-    alpha_CQ: float = 8.0     # multiplier: cooling loss increases quench rate
-
-    # Optional common-cause coupling factors for quench when cooling or misalignment present
-    alpha_common_cause_quench: float = 2.0
+    # Dependency multipliers (how much M or C increase quench initiation)
+    alpha_MQ: float = 5.0
+    alpha_CQ: float = 8.0
+    alpha_common_cause_quench: float = 2.0  # added multiplier in MC state
 
 
 @dataclass
 class ModelParams:
-    # Whether cooling hazard is per coil or a system-level common-cause in addition to per-coil
     use_per_coil_cooling: bool = True
     use_system_cc_cooling: bool = True
-
-    # Whether to allow combined degraded states (M+C, Q+M, Q+C). If False, simplify the chain.
     enable_combined_states: bool = True
 
-    # Mission time horizon and integrator settings
     mission_hours: float = 1000.0
-    dt_hours: float = 0.5   # time step for RK4 integrator
+    dt_hours: float = 0.5
+
     # Monte Carlo settings
     mc_trials: int = 5000
     random_seed: int = 42
 
 
-class CTMCModel:
-    """
-    Build and solve a CTMC for event-dependent failure modes of a TF coil system.
-    """
+# --------------------------- CTMC Model ---------------------------
 
+class CTMCModel:
     def __init__(self, config: SystemConfig, hazards: HazardParams, mp: ModelParams):
         self.config = config
         self.hz = hazards
         self.mp = mp
 
-        # Joints per coil allocation
+        # Distribute joints if not provided
         if self.config.joints_per_coil is None:
             avg = self.config.n_joints_total // self.config.n_tf_coils
             rem = self.config.n_joints_total % self.config.n_tf_coils
@@ -107,157 +96,117 @@ class CTMCModel:
         self.Q = self._build_generator()
 
     def _define_states(self) -> List[str]:
-        """
-        Define system-level states.
-        We track system condition at the aggregate level. States:
-        H  : Healthy
-        M  : Misalignment present (system-level indication)
-        C  : Cooling loss present
-        Q  : Quench in progress
-        MC : Misalignment + Cooling loss
-        QM : Quench + Misalignment
-        QC : Quench + Cooling loss
-        F  : Failed (absorbing)
-        """
         if self.mp.enable_combined_states:
             return ["H", "M", "C", "Q", "MC", "QM", "QC", "F"]
         else:
-            # Simplified chain without combined states
             return ["H", "M", "C", "Q", "F"]
 
     def _aggregate_hazards(self) -> Dict[str, float]:
-        """
-        Compute aggregate system-level transition rates from base hazards and configuration.
-        """
         n_coils = self.config.n_tf_coils
         joints_total = self.config.n_joints_total
-        joints_per_coil = self.config.joints_per_coil
 
-        # Aggregate per-joint hazards
+        # Aggregate per-joint hazards to system level
         lambda_Q_sys = joints_total * self.hz.lambda_quench_per_joint
         lambda_M_sys = joints_total * self.hz.lambda_misalignment_per_joint
 
-        # Cooling hazards
-        lambda_C_per_coil_total = 0.0
+        # Cooling: per-coil + optional system-level CC
+        lambda_C = 0.0
         if self.mp.use_per_coil_cooling:
-            # Sum per coil hazard
-            lambda_C_per_coil_total = n_coils * self.hz.lambda_cooling_per_coil
-
-        lambda_C_cc_sys = self.hz.lambda_cooling_system_cc if self.mp.use_system_cc_cooling else 0.0
+            lambda_C += n_coils * self.hz.lambda_cooling_per_coil
+        if self.mp.use_system_cc_cooling:
+            lambda_C += self.hz.lambda_cooling_system_cc
 
         return {
             "lambda_Q_sys": lambda_Q_sys,
             "lambda_M_sys": lambda_M_sys,
-            "lambda_C_sys": lambda_C_per_coil_total + lambda_C_cc_sys,
+            "lambda_C_sys": lambda_C,
         }
 
     def _build_generator(self) -> np.ndarray:
-        """
-        Build the CTMC generator matrix Q (rows sum to zero).
-        State order defined by self.states.
-        """
         S = len(self.states)
         Q = np.zeros((S, S), dtype=float)
         idx = self.state_index
         agg = self._aggregate_hazards()
 
-        # Base hazards
         lQ = agg["lambda_Q_sys"]
         lM = agg["lambda_M_sys"]
         lC = agg["lambda_C_sys"]
 
-        # Failure progression rates
         mu_QF = self.hz.mu_quench_to_fail
         mu_MF = self.hz.mu_misalignment_to_fail
         mu_CF = self.hz.mu_cooling_to_fail
 
-        # Repairs
         rQ = self.hz.repair_from_quench
         rM = self.hz.repair_from_misalignment
         rC = self.hz.repair_from_cooling
 
-        # Multipliers for dependency
         a_MQ = self.hz.alpha_MQ
         a_CQ = self.hz.alpha_CQ
         a_ccQ = self.hz.alpha_common_cause_quench
 
-        # Helper to add rate
         def add_rate(src: str, dst: str, rate: float):
             if rate <= 0:
                 return
             i, j = idx[src], idx[dst]
             Q[i, j] += rate
 
-        # Healthy transitions
+        # Healthy
         add_rate("H", "Q", lQ)
         add_rate("H", "M", lM)
         add_rate("H", "C", lC)
 
-        if "F" in idx:
-            # Allow direct rare common-cause to failure if desired (set via mu_* or add custom)
-            pass
-
-        # From M (misalignment):
-        # Increased quench hazard
+        # Misalignment
         add_rate("M", "Q", lQ * a_MQ)
-        # Natural progression to failure from M
         add_rate("M", "F", mu_MF)
-        # Repair back to H
         add_rate("M", "H", rM)
-        # If combined states enabled, allow cooling to also occur while misaligned
         if "MC" in idx:
             add_rate("M", "MC", lC)
 
-        # From C (cooling loss):
+        # Cooling loss
         add_rate("C", "Q", lQ * a_CQ)
         add_rate("C", "F", mu_CF)
         add_rate("C", "H", rC)
         if "MC" in idx:
-            add_rate("C", "MC", lM)  # misalignment while cooling impaired
+            add_rate("C", "MC", lM)
 
-        # From Q (quench):
-        # Progress to failure
+        # Quench
         add_rate("Q", "F", mu_QF)
-        # Repairs back to H (e.g., safe shutdown & recovery)
         add_rate("Q", "H", rQ)
-        # Allow that while in quench, cooling/misalignment can also be detected (optional small rates)
-        if self.mp.enable_combined_states:
-            add_rate("Q", "QM", lM * 0.1)  # rare concurrent misalignment detection
-            add_rate("Q", "QC", lC * 0.1)  # rare concurrent cooling fault detection
+        if "QM" in idx:
+            add_rate("Q", "QM", lM * 0.1)
+        if "QC" in idx:
+            add_rate("Q", "QC", lC * 0.1)
 
         if self.mp.enable_combined_states:
-            # From MC (misalignment + cooling loss)
-            # Quench hazard gets both multipliers + optional common-cause multiplier
+            # Misalignment + Cooling
             add_rate("MC", "Q", lQ * a_MQ * a_CQ * a_ccQ)
-            add_rate("MC", "F", mu_MF + mu_CF)  # either may push to failure
-            # Repairs: assume if either is repaired, we return to single-degraded states or H
-            add_rate("MC", "M", rC)  # cooling repaired, still misaligned
-            add_rate("MC", "C", rM)  # misalignment corrected, still cooling loss
-            # From QM (quench + misalignment)
-            add_rate("QM", "F", mu_QF * (1 + 0.5))  # faster failure under combined stress
-            add_rate("QM", "M", rQ)  # quench resolved, misalignment remains
-            # From QC (quench + cooling loss)
-            add_rate("QC", "F", mu_QF * (1 + 0.7))
+            add_rate("MC", "F", mu_MF + mu_CF)
+            add_rate("MC", "M", rC)
+            add_rate("MC", "C", rM)
+
+            # Quench + Misalignment
+            add_rate("QM", "F", mu_QF * 1.5)
+            add_rate("QM", "M", rQ)
+
+            # Quench + Cooling
+            add_rate("QC", "F", mu_QF * 1.7)
             add_rate("QC", "C", rQ)
 
-        # Absorbing failure state: no exits
-        # Finalize row sums to zero
+        # Make rows sum to zero
         for i in range(S):
             Q[i, i] = -np.sum(Q[i, :])
 
         return Q
 
+    # --------------- Transient solver (RK4) ---------------
+
     def rk4_transient(self, t_end_hours: float, dt_hours: float) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Solve dp/dt = p * Q with RK4 over [0, t_end].
-        Returns: times, probabilities matrix (len(times) x S)
-        """
         S = len(self.states)
         Q = self.Q
         t = 0.0
         times = [t]
         p = np.zeros(S)
-        p[self.state_index["H"]] = 1.0  # start healthy
+        p[self.state_index["H"]] = 1.0
         Ps = [p.copy()]
 
         def dp_dt(pvec):
@@ -271,11 +220,12 @@ class CTMCModel:
             k3 = dp_dt(p + 0.5 * h * k2)
             k4 = dp_dt(p + h * k3)
             p = p + (h / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+
             # Numerical cleanup
             p = np.maximum(p, 0.0)
             s = np.sum(p)
             if s > 0:
-                p = p / s
+                p /= s
             t += h
             times.append(t)
             Ps.append(p.copy())
@@ -283,27 +233,9 @@ class CTMCModel:
         return np.array(times), np.vstack(Ps)
 
     def reliability(self, pvec: np.ndarray) -> float:
-        """
-        Reliability R = 1 - P(Failed).
-        """
         return 1.0 - pvec[self.state_index["F"]]
 
-    def run_mission(self) -> Dict[str, float]:
-        """
-        Integrate over mission time and return end-state metrics.
-        """
-        T = self.mp.mission_hours
-        dt = self.mp.dt_hours
-        times, Ps = self.rk4_transient(T, dt)
-        pT = Ps[-1, :]
-        return {
-            "mission_hours": T,
-            "P_failed": float(pT[self.state_index["F"]]),
-            "Reliability": float(self.reliability(pT)),
-            "state_probs": {s: float(pT[self.state_index[s]]) for s in self.states},
-        }
-
-    # ----------------------- Monte Carlo sanity check -----------------------
+    # --------------- Monte Carlo sanity check ---------------
 
     def _sample_exponential(self, rate: float, rng: np.random.Generator) -> float:
         if rate <= 0.0:
@@ -311,20 +243,13 @@ class CTMCModel:
         return rng.exponential(1.0 / rate)
 
     def monte_carlo_failure_prob(self) -> float:
-        """
-        Simple discrete-event Monte Carlo to estimate P(Failure by T).
-        This is a coarse sanity check, not a full CTMC sampler of all path dynamics.
-        """
         T = self.mp.mission_hours
         trials = self.mp.mc_trials
         rng = np.random.default_rng(self.mp.random_seed)
 
         agg = self._aggregate_hazards()
-        lQ = agg["lambda_Q_sys"]
-        lM = agg["lambda_M_sys"]
-        lC = agg["lambda_C_sys"]
+        lQ, lM, lC = agg["lambda_Q_sys"], agg["lambda_M_sys"], agg["lambda_C_sys"]
 
-        # For simplicity, simulate earliest event times and apply dependency logic
         failed = 0
         for _ in range(trials):
             t_now = 0.0
@@ -337,19 +262,14 @@ class CTMCModel:
                     t_event = min(tQ, tM, tC)
                     if t_now + t_event > T:
                         break
-                    if t_event == tQ:
-                        state = "Q"
-                    elif t_event == tM:
-                        state = "M"
-                    else:
-                        state = "C"
+                    state = "Q" if t_event == tQ else ("M" if t_event == tM else "C")
                     t_now += t_event
+
                 elif state == "M":
-                    # Quench hazard increases
                     tQ = self._sample_exponential(lQ * self.hz.alpha_MQ, rng)
                     tF = self._sample_exponential(self.hz.mu_misalignment_to_fail, rng)
                     tR = self._sample_exponential(self.hz.repair_from_misalignment, rng)
-                    tC = self._sample_exponential(lC, rng)  # may move to MC
+                    tC = self._sample_exponential(lC, rng)
                     t_event = min(tQ, tF, tR, tC)
                     if t_now + t_event > T:
                         break
@@ -362,6 +282,7 @@ class CTMCModel:
                     else:
                         state = "MC"
                     t_now += t_event
+
                 elif state == "C":
                     tQ = self._sample_exponential(lQ * self.hz.alpha_CQ, rng)
                     tF = self._sample_exponential(self.hz.mu_cooling_to_fail, rng)
@@ -379,9 +300,10 @@ class CTMCModel:
                     else:
                         state = "MC"
                     t_now += t_event
+
                 elif state == "MC":
-                    # Strongly elevated quench + two ways to fail or repair towards single degraded
-                    tQ = self._sample_exponential(lQ * self.hz.alpha_MQ * self.hz.alpha_CQ * self.hz.alpha_common_cause_quench, rng)
+                    tQ = self._sample_exponential(
+                        lQ * self.hz.alpha_MQ * self.hz.alpha_CQ * self.hz.alpha_common_cause_quench, rng)
                     tF_M = self._sample_exponential(self.hz.mu_misalignment_to_fail, rng)
                     tF_C = self._sample_exponential(self.hz.mu_cooling_to_fail, rng)
                     tR_M = self._sample_exponential(self.hz.repair_from_misalignment, rng)
@@ -398,8 +320,8 @@ class CTMCModel:
                     else:
                         state = "M"
                     t_now += t_event
+
                 elif state == "Q":
-                    # Progress to failure, or repair. Rarely transition to combined states.
                     tF = self._sample_exponential(self.hz.mu_quench_to_fail, rng)
                     tR = self._sample_exponential(self.hz.repair_from_quench, rng)
                     tM = self._sample_exponential(lM * 0.1, rng)
@@ -416,6 +338,7 @@ class CTMCModel:
                     else:
                         state = "QC"
                     t_now += t_event
+
                 elif state == "QM":
                     tF = self._sample_exponential(self.hz.mu_quench_to_fail * 1.5, rng)
                     tR = self._sample_exponential(self.hz.repair_from_quench, rng)
@@ -424,6 +347,7 @@ class CTMCModel:
                         break
                     state = "F" if t_event == tF else "M"
                     t_now += t_event
+
                 elif state == "QC":
                     tF = self._sample_exponential(self.hz.mu_quench_to_fail * 1.7, rng)
                     tR = self._sample_exponential(self.hz.repair_from_quench, rng)
@@ -432,8 +356,8 @@ class CTMCModel:
                         break
                     state = "F" if t_event == tF else "C"
                     t_now += t_event
+
                 else:
-                    # F absorbing
                     break
 
             if state == "F":
@@ -442,58 +366,232 @@ class CTMCModel:
         return failed / trials
 
 
-# --------------------------- Example usage ---------------------------
+# --------------------------- Utilities ---------------------------
+
+def save_transient_csv(path: str, times: np.ndarray, Ps: np.ndarray, state_names: List[str]):
+    idxF = state_names.index("F")
+    P_fail = Ps[:, idxF]
+    R = 1.0 - P_fail
+
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        header = ["time_hours", "Reliability", "P_fail"] + [f"P_{s}" for s in state_names]
+        w.writerow(header)
+        for t, pvec, r, pf in zip(times, Ps, R, P_fail):
+            row = [float(t), float(r), float(pf)] + [float(x) for x in pvec]
+            w.writerow(row)
+
+
+def run_scenario(name: str, config: SystemConfig, hazards: HazardParams, mp: ModelParams, outdir: str):
+    model = CTMCModel(config, hazards, mp)
+    times, Ps = model.rk4_transient(mp.mission_hours, mp.dt_hours)
+    pT = Ps[-1, :]
+    R_T = model.reliability(pT)
+    P_fail_T = 1.0 - R_T
+    mc_pf = model.monte_carlo_failure_prob()
+
+    os.makedirs(outdir, exist_ok=True)
+    csv_path = os.path.join(outdir, f"{name}_transient.csv")
+    save_transient_csv(csv_path, times, Ps, model.states)
+
+    # Print a concise summary
+    print(f"\n=== {name} ===")
+    print(f"Mission time (h): {mp.mission_hours:.1f}")
+    print(f"P_fail(T)  CTMC : {P_fail_T:.6e}")
+    print(f"P_fail(T)   MC  : {mc_pf:.6e}")
+    print(f"|Δ| (abs)       : {abs(P_fail_T - mc_pf):.6e}")
+    print("State probabilities at T:")
+    for s in model.states:
+        print(f"  {s}: {pT[model.state_index[s]]:.6e}")
+
+    return {
+        "name": name,
+        "times": times,
+        "Ps": Ps,
+        "states": model.states,
+        "P_fail_T_ctmc": P_fail_T,
+        "P_fail_T_mc": mc_pf,
+        "R_T": R_T,
+        "csv_path": csv_path,
+    }
+
+
+def write_comparison_csv(path: str, t1: np.ndarray, Pf1: np.ndarray, t2: np.ndarray, Pf2: np.ndarray,
+                         name1: str, name2: str):
+    assert len(t1) == len(t2), "Time grids differ; align before writing comparison."
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["time_hours", f"P_fail_{name1}", f"P_fail_{name2}"])
+        for t, pf1, pf2 in zip(t1, Pf1, Pf2):
+            w.writerow([float(t), float(pf1), float(pf2)])
+
+
+def write_summary_csv(path: str, rows: List[Dict[str, float]]):
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["scenario", "mission_hours", "P_fail_CTMC", "P_fail_MC", "Reliability_R(T)"])
+        for r in rows:
+            w.writerow([r["name"], r["mission_hours"], r["P_fail_T_ctmc"], r["P_fail_T_mc"], r["R_T"]])
+
+
+# --------------------------- Plotting ---------------------------
+
+def plot_comparison(outdir: str, res_iter: Dict, res_step: Dict):
+    import matplotlib.pyplot as plt
+
+    # Comparison overlay: P_fail(t)
+    idxF_iter = res_iter["states"].index("F")
+    idxF_step = res_step["states"].index("F")
+    Pf_iter = res_iter["Ps"][:, idxF_iter]
+    Pf_step = res_step["Ps"][:, idxF_step]
+
+    plt.figure(figsize=(8, 4.8), dpi=120)
+    plt.plot(res_iter["times"], Pf_iter, label="ITER-like P_fail(t)", lw=2)
+    plt.plot(res_step["times"], Pf_step, label="STEP-like P_fail(t)", lw=2)
+    plt.xlabel("Time (hours)")
+    plt.ylabel("Failure probability")
+    plt.title("CTMC: P_fail(t) Comparison")
+    plt.grid(alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    out_png_pf = os.path.join(outdir, "comparison_Pfail.png")
+    plt.savefig(out_png_pf)
+    print(f"Saved plot: {out_png_pf}")
+
+    # Comparison overlay: Reliability R(t)
+    R_iter = 1.0 - Pf_iter
+    R_step = 1.0 - Pf_step
+    plt.figure(figsize=(8, 4.8), dpi=120)
+    plt.plot(res_iter["times"], R_iter, label="ITER-like R(t)", lw=2)
+    plt.plot(res_step["times"], R_step, label="STEP-like R(t)", lw=2)
+    plt.xlabel("Time (hours)")
+    plt.ylabel("Reliability")
+    plt.title("CTMC: Reliability Comparison")
+    plt.grid(alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    out_png_R = os.path.join(outdir, "comparison_R.png")
+    plt.savefig(out_png_R)
+    print(f"Saved plot: {out_png_R}")
+
+def plot_states(outdir: str, res: Dict):
+    import matplotlib.pyplot as plt
+    times = res["times"]
+    Ps = res["Ps"]
+    labels = res["states"]
+    colors = ["#2ca02c", "#ff7f0e", "#17becf", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f", "#d62728"][:len(labels)]
+    plt.figure(figsize=(9, 5.2), dpi=120)
+    plt.stackplot(times, Ps.T, labels=labels, colors=colors, alpha=0.9)
+    plt.xlabel("Time (hours)")
+    plt.ylabel("State probability")
+    plt.title(f"CTMC State Occupancy — {res['name']}")
+    plt.legend(loc="upper left", ncol=2, frameon=True)
+    plt.grid(True, alpha=0.25)
+    plt.tight_layout()
+    out_png = os.path.join(outdir, f"{res['name']}_states.png")
+    plt.savefig(out_png)
+    print(f"Saved plot: {out_png}")
+
+
+# --------------------------- Main: scenarios ---------------------------
 
 if __name__ == "__main__":
-    # Configure system and hazards (edit these to your case)
-    config = SystemConfig(
+    OUTDIR = "ctmc_outputs"
+    PLOT = True  # <-- plotting ON explicitly
+    os.makedirs(OUTDIR, exist_ok=True)
+
+    # Common system config
+    config_common = SystemConfig(
         n_tf_coils=12,
         n_joints_total=2880,
-        joints_per_coil=None  # will be auto-distributed
+        joints_per_coil=None
     )
 
-    hazards = HazardParams(
-        lambda_quench_per_joint=1e-7,       # per joint per hour
-        lambda_misalignment_per_joint=5e-8, # per joint per hour
-        lambda_cooling_per_coil=1e-6,       # per coil per hour
-        lambda_cooling_system_cc=2e-6,      # system-level per hour
-        mu_quench_to_fail=1e-3,
-        mu_misalignment_to_fail=1e-5,
-        mu_cooling_to_fail=2e-4,
-        repair_from_quench=5e-4,
-        repair_from_misalignment=1e-3,
-        repair_from_cooling=8e-4,
-        alpha_MQ=5.0,
-        alpha_CQ=8.0,
-        alpha_common_cause_quench=2.0
-    )
-
-    mp = ModelParams(
+    # Common model params
+    mp_common = ModelParams(
         use_per_coil_cooling=True,
         use_system_cc_cooling=True,
         enable_combined_states=True,
-        mission_hours=1000.0,
+        mission_hours=1000.0,   # <-- set your mission time
         dt_hours=0.5,
         mc_trials=5000,
         random_seed=42
     )
 
-    model = CTMCModel(config, hazards, mp)
+    # ---------------- Scenario A: ITER-like (illustrative) ----------------
+    hazards_iter = HazardParams(
+        lambda_quench_per_joint=2e-8,
+        lambda_misalignment_per_joint=1e-8,
+        lambda_cooling_per_coil=3e-7,
+        lambda_cooling_system_cc=8e-7,
+        mu_quench_to_fail=3.6,
+        mu_misalignment_to_fail=5e-6,
+        mu_cooling_to_fail=1e-4,
+        repair_from_quench=0.0,
+        repair_from_misalignment=0.0,
+        repair_from_cooling=0.0,
+        alpha_MQ=4.0,
+        alpha_CQ=6.0,
+        alpha_common_cause_quench=2.0
+    )
 
-    # Solve CTMC transient and report mission reliability
-    results = model.run_mission()
-    print("=== CTMC transient results ===")
-    print(f"Mission time (h): {results['mission_hours']:.1f}")
-    print(f"P(Failure by T): {results['P_failed']:.6f}")
-    print(f"Reliability R(T): {results['Reliability']:.6f}")
-    print("State probabilities at T:")
-    for s, p in results["state_probs"].items():
-        print(f"  {s}: {p:.6f}")
+    # ---------------- Scenario B: STEP-like (illustrative) ----------------
+    hazards_step = HazardParams(
+        lambda_quench_per_joint=6e-8,
+        lambda_misalignment_per_joint=2e-8,
+        lambda_cooling_per_coil=4e-7,
+        lambda_cooling_system_cc=1.2e-6,
+        mu_quench_to_fail=2.0,
+        mu_misalignment_to_fail=8e-6,
+        mu_cooling_to_fail=1.5e-4,
+        repair_from_quench=0.0,
+        repair_from_misalignment=0.0,
+        repair_from_cooling=0.0,
+        alpha_MQ=5.5,
+        alpha_CQ=8.5,
+        alpha_common_cause_quench=2.5
+    )
 
-    # Monte Carlo sanity check
-    pc_mc = model.monte_carlo_failure_prob()
-    print("\n=== Monte Carlo estimate ===")
-    print(f"P(Failure by T) ~ {pc_mc:.6f}")
+    # Run both scenarios
+    res_iter = run_scenario("ITER_like", config_common, hazards_iter, mp_common, OUTDIR)
+    res_step = run_scenario("STEP_like", config_common, hazards_step, mp_common, OUTDIR)
 
-    # Quick consistency note
-    print("\nNote: CTMC transient and MC results should be close for these settings.")
+    # Write comparison CSV (P_fail over time)
+    idxF_iter = res_iter["states"].index("F")
+    idxF_step = res_step["states"].index("F")
+    Pf_iter = res_iter["Ps"][:, idxF_iter]
+    Pf_step = res_step["Ps"][:, idxF_step]
+    cmp_path = os.path.join(OUTDIR, "comparison_Pfail.csv")
+    write_comparison_csv(cmp_path, res_iter["times"], Pf_iter, res_step["times"], Pf_step,
+                         res_iter["name"], res_step["name"])
+    print(f"\nSaved comparison time series: {cmp_path}")
+
+    # Write end-of-mission summary
+    summary_rows = [
+        {
+            "name": res_iter["name"],
+            "mission_hours": mp_common.mission_hours,
+            "P_fail_T_ctmc": res_iter["P_fail_T_ctmc"],
+            "P_fail_T_mc": res_iter["P_fail_T_mc"],
+            "R_T": res_iter["R_T"],
+        },
+        {
+            "name": res_step["name"],
+            "mission_hours": mp_common.mission_hours,
+            "P_fail_T_ctmc": res_step["P_fail_T_ctmc"],
+            "P_fail_T_mc": res_step["P_fail_T_mc"],
+            "R_T": res_step["R_T"],
+        },
+    ]
+    sum_path = os.path.join(OUTDIR, "summary.csv")
+    write_summary_csv(sum_path, summary_rows)
+    print(f"Saved end-of-mission summary: {sum_path}")
+
+    # --------------- Explicit plotting calls ---------------
+    if PLOT:
+        try:
+            plot_comparison(OUTDIR, res_iter, res_step)
+            plot_states(OUTDIR, res_iter)
+            plot_states(OUTDIR, res_step)
+        except Exception as e:
+            print(f"[PLOT] Skipped plotting due to error: {e}")
