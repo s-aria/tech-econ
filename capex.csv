@@ -1,24 +1,24 @@
 Reactor,System,Subsystem,Capex (£)
-SPP2.4,TF coils,HTS centre column,716030021
-SPP2.4,TF coils,HTS limbs,916628572
+SPP2.4,TF coils,HTS centre column, 941544613.28
+SPP2.4,TF coils,HTS limbs, 1967961006.63 
 SPP2.4,TF coils,Cu centre column,0
 SPP2.4,TF coils,Cu limbs,0
-SPP2.4,PF coils, PF coils,1121389830
-SPP2.4,Vacuum vessel,Vacuum vessel,797461712
-SPP2.4,Breeding,Outboard breeder blanket & FW (exc. Breeder),229745450
-SPP2.4,Breeding,Outboard breeder material,1964396580
+SPP2.4,PF coils, PF coils,1121389830.14912
+SPP2.4,Vacuum vessel,Vacuum vessel,797461711.50
+SPP2.4,Breeding,Outboard breeder blanket & FW (exc. Breeder),229745450.00
+SPP2.4,Breeding,Outboard breeder material,1964396580.38
 SPP2.4,Breeding,Inboard breeder blanket & FW (exc. Breeder),0
 SPP2.4,Breeding,Inboard breeder material,0
-SPP2.4,IB Shield,IB shield,559193230
+SPP2.4,IB Shield,IB shield,559193230.12
 SPP2.4,Divertor breeding,Divertor breeding,0
-SPP2.4,Limiters,Limiters,123445017
-SPP2.4,HCD,HCD,2890340842
-SPP2.4,Cryoplant,Cryoplant,175181423
-SPP2.4,Power cycle,Power cycle,1264435400
-SPP2.4,Maintenance,Remote Handling Equipment,1710767204
-SPP2.4,Buildings,Buildings,6389032055
-SPP2.4,Cryostat,Cryostat,301792890
-SPP2.4,All other capex,All other CAPEX,2840159773
+SPP2.4,Limiters,Limiters,123445017.47
+SPP2.4,HCD,HCD,2890340841.71
+SPP2.4,Cryoplant,Cryoplant,175181423.15
+SPP2.4,Power cycle,Power cycle,1264435400.46
+SPP2.4,Maintenance,Remote Handling Equipment,1710767203.98
+SPP2.4,Buildings,Buildings,6389032055.15
+SPP2.4,Cryostat,Cryostat,301792889.83
+SPP2.4,All other capex,All other CAPEX,2840159772.87
 SPP2.5,TF coils,HTS centre column,761676444.05
 SPP2.5,TF coils,HTS limbs,886671883.88
 SPP2.5,TF coils,Cu centre column,0
