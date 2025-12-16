@@ -69,7 +69,7 @@ fig_fmea.add_trace(go.Scatter(
         "RPN: %{marker.color:.0f}<extra></extra>"
     )
 ))
-# fig_fmea.show()
+fig_fmea.show()
 
 # Optional console output: ranked FMEA table
 print("\nFMEA Ranked by RPN (Desc):")
